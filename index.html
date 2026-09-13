@@ -94,6 +94,7 @@ var DEFAULT = {
   nextId: "A",
   fails: {},
   history: [],
+  activities: [],
   schedule: {liftDays:["MO","TH"], liftTime:"17:30", runDays:["TU","FR","SA"], runTime:"07:00"}
 };
 
@@ -104,6 +105,7 @@ function load(){
   try { var raw = localStorage.getItem(KEY); S = raw ? JSON.parse(raw) : clone(DEFAULT); }
   catch(e){ S = clone(DEFAULT); }
   if(!S.schedule) S.schedule = clone(DEFAULT.schedule);
+  if(!S.activities) S.activities = [];
 }
 function save(){
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -209,6 +211,141 @@ function finishWorkout(){
   save(); session = null; restEnd = null; view = "home"; render();
 }
 
+// ---------- activities ----------
+function dur2sec(s){
+  if(!s) return 0;
+  var p = String(s).trim().split(":").map(Number);
+  if(p.some(isNaN)) return 0;
+  if(p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
+  if(p.length === 2) return p[0]*60 + p[1];
+  return p[0] || 0;
+}
+function sec2dur(t){
+  t = Math.round(t);
+  var h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
+  return (h ? h+":"+String(m).padStart(2,"0") : m) + ":" + String(s).padStart(2,"0");
+}
+function paceOf(a){
+  if(!a.dist || !a.sec) return "";
+  var t = (a.type||"").toLowerCase();
+  if(/cycl|bike|ride|swim|row/.test(t)) return (a.dist/(a.sec/3600)).toFixed(1) + " mph";
+  return sec2dur(a.sec / a.dist) + "/mi";
+}
+function num(v){
+  if(v == null) return 0;
+  var n = parseFloat(String(v).replace(/,/g,"").replace(/[^0-9.\-]/g,""));
+  return isNaN(n) ? 0 : n;
+}
+
+function parseCSV(text){
+  var rows = [], row = [], cur = "", q = false;
+  text = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for(var i=0;i<text.length;i++){
+    var c = text[i];
+    if(q){
+      if(c === '"' && text[i+1] === '"'){ cur += '"'; i++; }
+      else if(c === '"'){ q = false; }
+      else cur += c;
+    } else {
+      if(c === '"') q = true;
+      else if(c === ","){ row.push(cur); cur = ""; }
+      else if(c === "\n"){ row.push(cur); rows.push(row); row = []; cur = ""; }
+      else cur += c;
+    }
+  }
+  if(cur.length || row.length){ row.push(cur); rows.push(row); }
+  return rows.filter(function(r){ return r.some(function(c){ return c.trim() !== ""; }); });
+}
+
+function importGarmin(text){
+  var rows = parseCSV(text);
+  if(rows.length < 2){ msg = "That file didn't have any rows I could read."; render(); return; }
+  var head = rows[0].map(function(h){ return h.trim().toLowerCase(); });
+  function col(){
+    for(var i=0;i<arguments.length;i++){
+      var j = head.indexOf(arguments[i]);
+      if(j >= 0) return j;
+    }
+    return -1;
+  }
+  var cType = col("activity type","activitytype","type"),
+      cDate = col("date","start time","activity date"),
+      cTitle = col("title","activity name","name"),
+      cDist = col("distance","distance (mi)","distance (km)","km"),
+      cTime = col("time","total time","elapsed time","moving time","sec"),
+      cHR   = col("avg hr","average hr","avg heart rate","avg. hr"),
+      cCad  = col("avg run cadence","avg cadence","average run cadence"),
+      cCal  = col("calories"),
+      cPace = col("avg pace","average pace");
+
+  if(cDate < 0 || cTime < 0){
+    msg = "Couldn't find Date and Time columns — is this the Garmin activity list export?";
+    render(); return;
+  }
+  var added = 0, dupe = 0;
+  for(var r=1; r<rows.length; r++){
+    var row = rows[r];
+    var rawDate = (row[cDate] || "").trim();
+    if(!rawDate) continue;
+    var date = rawDate.slice(0,10);
+    var m = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) date = m[3]+"-"+String(m[1]).padStart(2,"0")+"-"+String(m[2]).padStart(2,"0");
+    var secs = dur2sec(row[cTime]);
+    if(!secs) secs = num(row[cTime]);
+    var a = {
+      date: date,
+      type: cType >= 0 ? (row[cType]||"").trim() : "Activity",
+      title: cTitle >= 0 ? (row[cTitle]||"").trim() : "",
+      dist: cDist >= 0 ? num(row[cDist]) : 0,
+      sec: secs,
+      hr: cHR >= 0 ? Math.round(num(row[cHR])) : 0,
+      cad: cCad >= 0 ? Math.round(num(row[cCad])) : 0,
+      cal: cCal >= 0 ? Math.round(num(row[cCal])) : 0,
+      pace: cPace >= 0 ? (row[cPace]||"").trim() : "",
+      src: "garmin"
+    };
+    if(!a.sec && !a.dist) continue;
+    var key = a.date + "|" + a.title + "|" + a.sec;
+    if(S.activities.some(function(x){ return x.date+"|"+x.title+"|"+x.sec === key; })){ dupe++; continue; }
+    S.activities.push(a);
+    added++;
+  }
+  S.activities.sort(function(a,b){ return a.date < b.date ? 1 : -1; });
+  save();
+  msg = "Imported " + added + " activit" + (added===1?"y":"ies") + (dupe ? ", skipped " + dupe + " already there." : ".");
+  render();
+}
+
+function pickFile(){
+  var inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".csv,text/csv,text/plain";
+  inp.onchange = function(){
+    var f = inp.files && inp.files[0];
+    if(!f) return;
+    var fr = new FileReader();
+    fr.onload = function(){ importGarmin(String(fr.result)); };
+    fr.onerror = function(){ msg = "Couldn't read that file."; render(); };
+    fr.readAsText(f);
+  };
+  inp.click();
+}
+
+function addRunManual(){
+  function v(id){ var e = document.getElementById(id); return e ? e.value.trim() : ""; }
+  var d = v("r_date") || todayISO();
+  var dist = num(v("r_dist")), sec = dur2sec(v("r_time"));
+  if(!dist && !sec){ msg = "Add at least a distance or a time."; render(); return; }
+  S.activities.unshift({
+    date: d, type: v("r_type") || "Running", title: v("r_title"),
+    dist: dist, sec: sec, hr: Math.round(num(v("r_hr"))),
+    cad: Math.round(num(v("r_cad"))), cal: 0, pace: "", src: "manual"
+  });
+  S.activities.sort(function(a,b){ return a.date < b.date ? 1 : -1; });
+  msg = ""; save(); render();
+}
+function delActivity(i){ S.activities.splice(i,1); save(); render(); }
+
 // ---------- calendar ----------
 function nextDateFor(day, time){
   var target = DAYS.indexOf(day), now = new Date();
@@ -264,11 +401,18 @@ function toggleDay(kind, day){
 
 // ---------- export ----------
 function exportCSV(){
-  var L = ["date,workout,body_weight,exercise,weight,reps_per_set,target"];
+  var L = ["# LIFTING","date,workout,body_weight,exercise,weight,reps_per_set,target"];
   S.history.forEach(function(w){
     w.lifts.forEach(function(l){
       L.push([w.date,w.name,(w.bw==null?"":w.bw),l.name,l.weight,l.logged.join("/"),l.target].join(","));
     });
+  });
+  L.push("");
+  L.push("# CARDIO");
+  L.push("date,type,title,distance_mi,duration,pace_or_speed,avg_hr,avg_cadence,source");
+  S.activities.forEach(function(a){
+    L.push([a.date, a.type, (a.title||"").replace(/,/g," "), a.dist || "",
+      a.sec ? sec2dur(a.sec) : "", paceOf(a), a.hr || "", a.cad || "", a.src].join(","));
   });
   L.push("");
   L.push("# next: " + workout(S.nextId).name);
@@ -342,6 +486,8 @@ function vHome(){
     + '<button class="btn solid" style="margin-top:16px" onclick="startWorkout()">Start workout</button></div>'
     + (last ? '<div class="card"><div class="label">Last session</div><div style="margin-top:4px">'+esc(last.name)+' · '+last.date+(last.bw?' · '+last.bw+' lb':'')+'</div>'
         + '<div class="sub" style="margin-top:4px">'+last.lifts.map(function(l){return esc(l.name)+' '+l.weight;}).join(' · ')+'</div></div>' : '')
+    + '<button class="btn" style="margin-bottom:8px" onclick="go(\'cardio\')">Cardio &amp; Garmin import'
+    + (S.activities.length ? ' <span class="sub num">(' + S.activities.length + ')</span>' : '') + '</button>'
     + '<div class="grid" style="margin-bottom:8px">'
     + '<button class="btn" onclick="go(\'plates\')">Plates</button>'
     + '<button class="btn" onclick="go(\'edit\')">Workouts</button>'
@@ -473,6 +619,42 @@ function vCal(){
     + '<div class="note">The Google Calendar buttons open a prefilled repeating event you confirm once. The .ics file imports both at once into any calendar app.</div>';
 }
 
+function vCardio(){
+  var list = S.activities.slice(0,40).map(function(a,i){
+    var bits = [];
+    if(a.dist) bits.push(a.dist.toFixed(2)+" mi");
+    if(a.sec) bits.push(sec2dur(a.sec));
+    var p = paceOf(a) || (a.pace ? a.pace+"/mi" : "");
+    if(p) bits.push(p);
+    if(a.hr) bits.push(a.hr+" bpm");
+    if(a.cad) bits.push(a.cad+" spm");
+    return '<div class="card" style="background:var(--card2);padding:13px">'
+      + '<div class="row"><div><div style="font-weight:500">'+esc(a.title || a.type)+'</div>'
+      + '<div class="sub">'+a.date+' · '+esc(a.type)+(a.src==="garmin"?" · Garmin":"")+'</div></div>'
+      + '<button class="step" style="width:30px;height:30px;font-size:15px;color:var(--rest)" onclick="delActivity('+i+')">×</button></div>'
+      + '<div class="sub num" style="margin-top:8px">'+bits.join(" · ")+'</div></div>';
+  }).join("") || '<div class="sub">Nothing logged yet.</div>';
+
+  return '<div class="head"><div class="h1">Cardio</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+    + '<div class="card"><div class="label" style="margin-bottom:10px">Import from Garmin Connect</div>'
+    + '<button class="btn solid" onclick="pickFile()">Choose CSV file</button>'
+    + '<div class="note">On a computer, open Garmin Connect → Activities, scroll until everything you want has loaded, then use Export CSV at the top right of the list. Email the file to yourself and pick it here. Duplicates are skipped, so re-importing is safe.</div></div>'
+
+    + '<div class="card"><div class="label" style="margin-bottom:10px">Log one by hand</div>'
+    + '<div class="grid"><div><div class="label">Date</div><input id="r_date" type="date" value="'+todayISO()+'"></div>'
+    + '<div><div class="label">Type</div><input id="r_type" value="Running"></div></div>'
+    + '<div class="grid" style="margin-top:10px">'
+    + '<div><div class="label">Distance (mi)</div><input id="r_dist" inputmode="decimal" placeholder="2.14"></div>'
+    + '<div><div class="label">Time</div><input id="r_time" placeholder="25:28"></div></div>'
+    + '<div class="grid" style="margin-top:10px">'
+    + '<div><div class="label">Avg HR</div><input id="r_hr" inputmode="numeric" placeholder="181"></div>'
+    + '<div><div class="label">Cadence</div><input id="r_cad" inputmode="numeric" placeholder="158"></div></div>'
+    + '<div style="margin-top:10px"><div class="label">Note</div><input id="r_title" placeholder="3:1 run/walk, felt easy"></div>'
+    + '<button class="btn" style="margin-top:12px" onclick="addRunManual()">Save activity</button></div>'
+    + (msg ? '<div class="note" style="color:var(--text)">'+esc(msg)+'</div>' : '')
+    + '<div class="label" style="margin:18px 0 8px">Logged</div>' + list;
+}
+
 function vHistory(){
   if(!S.history.length)
     return '<div class="head"><div class="h1">History</div><button class="link" onclick="go(\'home\')">Back</button></div>'
@@ -527,6 +709,7 @@ function render(){
   var h;
   if(view === "workout" && session) h = vWorkout();
   else if(view === "plates") h = vPlates();
+  else if(view === "cardio") h = vCardio();
   else if(view === "edit") h = vEdit();
   else if(view === "cal") h = vCal();
   else if(view === "history") h = vHistory();
