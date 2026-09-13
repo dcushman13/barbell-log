@@ -33,6 +33,8 @@ input,select{font:inherit;background:var(--card2);color:var(--text);
   text-decoration:none}
 a.btn,a.btn:visited,a.btn:hover{color:var(--text);text-decoration:none}
 a.btn.solid,a.btn.solid:visited{color:#fff}
+.icon{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--card2);
+  display:flex;align-items:center;justify-content:center;color:var(--text);flex:none}
 .tabbar{display:flex;gap:8px;margin-bottom:16px;background:var(--card);border:1px solid var(--line);
   border-radius:14px;padding:5px}
 .tabbar button{flex:1;padding:11px;border-radius:10px;font-size:15px;font-weight:500;color:var(--dim)}
@@ -324,7 +326,8 @@ function importGarmin(text){
   render();
 }
 
-function pickFile(){
+function pickFile(handler){
+  var fn = handler === "sl" ? importStronglifts : importGarmin;
   var inp = document.createElement("input");
   inp.type = "file";
   inp.accept = ".csv,text/csv,text/plain";
@@ -332,11 +335,86 @@ function pickFile(){
     var f = inp.files && inp.files[0];
     if(!f) return;
     var fr = new FileReader();
-    fr.onload = function(){ importGarmin(String(fr.result)); };
+    fr.onload = function(){ fn(String(fr.result)); };
     fr.onerror = function(){ msg = "Couldn't read that file."; render(); };
     fr.readAsText(f);
   };
   inp.click();
+}
+
+function importStronglifts(text){
+  var rows = parseCSV(text);
+  if(rows.length < 2){ msg = "That file didn't have any rows I could read."; render(); return; }
+  var head = rows[0].map(function(h){ return h.trim().toLowerCase(); });
+  function col(){
+    for(var i=0;i<arguments.length;i++){ var j = head.indexOf(arguments[i]); if(j>=0) return j; }
+    return -1;
+  }
+  var cDate = col("date (yyyy/mm/dd)","date"),
+      cWnum = col("workout"),
+      cWname = col("workout name"),
+      cBw = col("body weight (lbs)","body weight"),
+      cEx = col("exercise"),
+      cSxR = col("setsxreps"),
+      cTop = col("top set reps x lbs");
+  if(cDate < 0 || cEx < 0){
+    msg = "Couldn't find Date and Exercise columns — is this the StrongLifts CSV export?";
+    render(); return;
+  }
+  var setCols = [];
+  for(var n = 1; n <= 8; n++){
+    var r = col("set "+n+" (reps)"), lb = col("set "+n+" (lbs)");
+    if(r >= 0) setCols.push([r, lb]);
+  }
+
+  var groups = {}, order = [];
+  for(var i = 1; i < rows.length; i++){
+    var row = rows[i];
+    var raw = (row[cDate] || "").trim();
+    if(!raw) continue;
+    var date = raw.slice(0,10).replace(/\//g, "-");
+    var key = date + "#" + (cWnum >= 0 ? (row[cWnum]||"") : "");
+    if(!groups[key]){
+      groups[key] = { date: date,
+        name: (cWname >= 0 && (row[cWname]||"").trim()) || "Workout",
+        bw: cBw >= 0 && num(row[cBw]) ? num(row[cBw]) : null,
+        sid: "sl:" + key,
+        lifts: [] };
+      order.push(key);
+    }
+    var name = (row[cEx] || "").trim();
+    if(!name) continue;
+    var reps = [], weight = 0;
+    setCols.forEach(function(c){
+      var r = num(row[c[0]]), lb = c[1] >= 0 ? num(row[c[1]]) : 0;
+      if(r > 0 || lb > 0){ reps.push(Math.round(r)); if(lb > weight) weight = lb; }
+    });
+    if(!reps.length && cTop >= 0){
+      var m = (row[cTop] || "").match(/(\d+)\s*x\s*([\d.]+)/i);
+      if(m){ reps = [Number(m[1])]; weight = Number(m[2]); }
+    }
+    if(!reps.length) continue;
+    groups[key].lifts.push({ name: name, weight: weight, logged: reps,
+      target: (cSxR >= 0 && (row[cSxR]||"").trim()) || (reps.length + "x" + reps[0]) });
+  }
+
+  var added = 0, dupe = 0;
+  var seen = {};
+  S.history.forEach(function(h){ if(h.sid) seen[h.sid] = 1; });
+  order.forEach(function(k){
+    var g = groups[k];
+    if(!g.lifts.length) return;
+    if(seen[g.sid]){ dupe++; return; }
+    seen[g.sid] = 1;
+    S.history.push(g);
+    added++;
+  });
+  S.history.sort(function(a,b){ return a.date < b.date ? 1 : -1; });
+  save();
+  msg = "Imported " + added + " session" + (added===1?"":"s")
+    + (dupe ? ", skipped " + dupe + " already there." : ".")
+    + (added ? " Your current working weights weren't changed." : "");
+  render();
 }
 
 function addRunManual(){
@@ -537,40 +615,68 @@ function pacePoints(kind){
   for(var i = S.activities.length - 1; i >= 0; i--){
     var a = S.activities[i];
     if(!re.test(a.type || "")) continue;
-    if(!a.dist || !a.sec) continue;
-    out.push({d:a.date, v:a.sec / a.dist});
+    if(!(a.dist > 0) || !(a.sec > 0)) continue;
+    var v = a.sec / a.dist;
+    if(!isFinite(v) || v <= 0) continue;
+    out.push({d:a.date, v:v});
   }
   return out;
 }
 function hasPace(kind){ return pacePoints(kind).length > 0; }
 
 // ---------- charts ----------
+function goodLift(l){
+  if(!l || !(l.weight > 0)) return false;
+  if(!l.logged || !l.logged.length) return false;
+  return l.logged.some(function(r){ return r > 0; });
+}
 function seriesFor(name){
   var out = [];
   for(var i = S.history.length - 1; i >= 0; i--){
     var w = S.history[i];
-    for(var j = 0; j < w.lifts.length; j++)
-      if(w.lifts[j].name === name) out.push({d:w.date, v:w.lifts[j].weight});
+    for(var j = 0; j < w.lifts.length; j++){
+      var l = w.lifts[j];
+      if(l.name === name && goodLift(l)) out.push({d:w.date, v:l.weight});
+    }
   }
   return out;
 }
 function bodySeries(){
   var out = [];
-  for(var i = S.history.length - 1; i >= 0; i--)
-    if(S.history[i].bw != null) out.push({d:S.history[i].date, v:S.history[i].bw});
+  for(var i = S.history.length - 1; i >= 0; i--){
+    var bw = S.history[i].bw;
+    if(bw != null && bw > 0) out.push({d:S.history[i].date, v:bw});
+  }
   return out;
 }
 function chartNames(){
   var seen = {}, out = [];
   S.history.forEach(function(w){ w.lifts.forEach(function(l){
+    if(!goodLift(l)) return;
     if(!seen[l.name]){ seen[l.name] = 1; out.push(l.name); } }); });
   return out;
+}
+
+var RANGES = [["w","1W",7],["m","1M",30],["s","6M",182],["y","1Y",365],["all","All",0]];
+function rangeDays(k){
+  for(var i=0;i<RANGES.length;i++) if(RANGES[i][0] === k) return RANGES[i][2];
+  return 0;
+}
+function inRange(pts, k){
+  var days = rangeDays(k);
+  if(!days) return pts;
+  var cut = new Date(); cut.setHours(0,0,0,0);
+  cut.setDate(cut.getDate() - (days - 1));
+  return pts.filter(function(p){
+    var d = new Date(String(p.d).slice(0,10) + "T00:00:00");
+    return !isNaN(d) && d >= cut;
+  });
 }
 function shortDate(d){ var p = String(d).split("-"); return p.length===3 ? (+p[1])+"/"+(+p[2]) : d; }
 
 function chartSVG(pts, fmt){
   fmt = fmt || function(v){ return Math.round(v); };
-  if(!pts.length) return '<div class="sub">Nothing logged for this yet.</div>';
+  if(!pts.length) return '<div class="sub">No data to chart.</div>';
   var W = 340, H = 190, L = 44, R = 10, T = 14, B = 26;
   var vs = pts.map(function(p){ return p.v; });
   var mn = Math.min.apply(null, vs), mx = Math.max.apply(null, vs);
@@ -585,7 +691,7 @@ function chartSVG(pts, fmt){
        + '<text x="'+(L-6)+'" y="'+(y+4).toFixed(1)+'" fill="var(--dim)" font-size="11" text-anchor="end">'+fmt(v)+'</text>';
   }
   var d = pts.map(function(p,i){ return (i?"L":"M") + X(i).toFixed(1) + " " + Y(p.v).toFixed(1); }).join(" ");
-  var dots = pts.map(function(p,i){
+  var dots = pts.length > 40 ? "" : pts.map(function(p,i){
     return '<circle cx="'+X(i).toFixed(1)+'" cy="'+Y(p.v).toFixed(1)+'" r="3.5" fill="var(--done)"/>'; }).join("");
   var xl = '<text x="'+L+'" y="'+(H-6)+'" fill="var(--dim)" font-size="11">'+shortDate(pts[0].d)+'</text>';
   if(pts.length > 1)
@@ -601,10 +707,12 @@ function vCharts(){
   var special = ["__bw","__runpace","__walkpace"];
   if(!pick || (special.indexOf(pick) < 0 && names.indexOf(pick) < 0)) pick = names[0] || "__bw";
   var isPace = pick === "__runpace" || pick === "__walkpace";
-  var pts = pick === "__bw" ? bodySeries()
+  var all = pick === "__bw" ? bodySeries()
     : pick === "__runpace" ? pacePoints("run")
     : pick === "__walkpace" ? pacePoints("walk")
     : seriesFor(pick);
+  var rk = window.__range || "all";
+  var pts = inRange(all, rk);
   var pills = names.map(function(n){
       return '<button class="pill'+(pick===n?' on':'')+'" onclick="window.__chart='+JSON.stringify(n).replace(/"/g,"&quot;")+';render()">'+esc(n)+'</button>';
     }).join("")
@@ -625,17 +733,30 @@ function vCharts(){
       + shownDiff+'</div>'
       + '<div class="sub">over '+pts.length+' session'+(pts.length===1?'':'s')+'</div></div></div>';
   }
+  var rangePills = '<div class="tabbar" style="margin-bottom:12px">'
+    + RANGES.map(function(r){
+        return '<button class="'+(rk===r[0]?"on":"")+'" onclick="window.__range=\''+r[0]+'\';render()">'+r[1]+'</button>';
+      }).join("") + '</div>';
   return '<div class="head"><div class="h1">Progress</div><button class="link" onclick="goBack()">Back</button></div>'
     + '<div style="margin-bottom:12px">'+pills+'</div>'
-    + '<div class="card">' + head + chartSVG(pts, isPace ? function(v){ return sec2dur(v); } : null) + '</div>'
-    + (isPace ? '<div class="note">Lower is faster — a line trending down is improvement.</div>' : '')
+    + rangePills
+    + '<div class="card">' + head + chartSVG(pts, isPace ? function(v){ return sec2dur(v); } : null)
+    + (!pts.length && all.length
+        ? '<div class="note">Nothing in this window — ' + all.length + ' entr' + (all.length===1?'y':'ies') + ' further back.</div>' : '')
+    + '</div>'
+    + (isPace && pts.length ? '<div class="note">Lower is faster — a line trending down is improvement.</div>' : '')
     + (pick === "__bw" && !pts.length
         ? '<div class="note">Body weight is recorded when you type it in at the end of a workout.</div>' : '');
 }
 
 function vHome(){
-  return '<div class="head"><div class="h1">Barbell Log</div><div class="link num">'
-    + (tab === "lift" ? S.history.length + ' logged' : S.activities.length + ' logged') + '</div></div>'
+  var dumbbell = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" '
+    + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M4 9v6M7 6.5v11M17 6.5v11M20 9v6M7 12h10"/></svg>';
+  return '<div class="head" style="align-items:center">'
+    + '<div><div class="h1">Barbell Log</div>'
+    + '<div class="sub num">' + (tab === "lift" ? S.history.length + ' sessions' : S.activities.length + ' activities') + '</div></div>'
+    + '<button class="icon" onclick="go(\'settings\')" aria-label="Settings">' + dumbbell + '</button></div>'
     + '<div class="tabbar">'
     + '<button class="'+(tab==="lift"?"on":"")+'" onclick="setTab(\'lift\')">Lifting</button>'
     + '<button class="'+(tab==="cardio"?"on":"")+'" onclick="setTab(\'cardio\')">Cardio</button></div>'
@@ -663,8 +784,7 @@ function pLift(){
     + '<button class="btn" onclick="go(\'cal\')">Schedule</button></div>'
     + '<div class="grid">'
     + '<button class="btn" onclick="go(\'history\')">History</button>'
-    + '<button class="btn" onclick="go(\'export\')">Export</button>'
-    + '<button class="btn" onclick="go(\'settings\')">Settings</button></div>'
+    + '<button class="btn" onclick="go(\'export\')">Export</button></div>'
     + (msg ? '<div class="note" style="color:var(--rest)">'+esc(msg)+'</div>' : '');
 }
 
@@ -821,10 +941,6 @@ function pCardio(){
     + '</div>';
 
   return totals
-    + '<div class="card"><div class="label" style="margin-bottom:10px">Import from Garmin Connect</div>'
-    + '<button class="btn solid" onclick="pickFile()">Choose CSV file</button>'
-    + '<div class="note">On a computer, open Garmin Connect → Activities, scroll until everything you want has loaded, then use Export CSV at the top right of the list. Email the file to yourself and pick it here. Duplicates are skipped, so re-importing is safe.</div></div>'
-
     + '<div class="card"><div class="label" style="margin-bottom:10px">Log one by hand</div>'
     + '<div class="grid"><div><div class="label">Date</div><input id="r_date" type="date" value="'+todayISO()+'"></div>'
     + '<div><div class="label">Type</div><input id="r_type" value="Running"></div></div>'
@@ -836,7 +952,8 @@ function pCardio(){
     + '<div><div class="label">Cadence</div><input id="r_cad" inputmode="numeric" placeholder="158"></div>'
     + '<div><div class="label">Calories</div><input id="r_cal" inputmode="numeric" placeholder="370"></div></div>'
     + '<div style="margin-top:10px"><div class="label">Note</div><input id="r_title" placeholder="3:1 run/walk, felt easy"></div>'
-    + '<button class="btn" style="margin-top:12px" onclick="addRunManual()">Save activity</button></div>'
+    + '<button class="btn" style="margin-top:12px" onclick="addRunManual()">Save activity</button>'
+    + '<div class="note">Bulk import from a Garmin CSV lives in Settings.</div></div>'
     + (msg ? '<div class="note" style="color:var(--text)">'+esc(msg)+'</div>' : '')
     + '<div class="grid" style="margin-top:4px">'
     + '<button class="btn" onclick="go(\'cal\')">Schedule</button>'
@@ -877,6 +994,13 @@ function copyOut(){
 
 function vSettings(){
   return '<div class="head"><div class="h1">Settings</div><button class="link" onclick="goBack()">Back</button></div>'
+    + '<div class="card"><div class="label" style="margin-bottom:10px">Import data</div>'
+    + '<button class="btn solid" onclick="pickFile()">Garmin Connect CSV</button>'
+    + '<div class="note">On a computer, open Garmin Connect \u2192 Activities, scroll until everything you want has loaded, then Export CSV at the top right. Email it to yourself and pick it here.</div>'
+    + '<button class="btn solid" style="margin-top:14px" onclick="pickFile(\'sl\')">StrongLifts CSV</button>'
+    + '<div class="note">StrongLifts app \u2192 Settings \u2192 Export data. Brings in your past sessions with every set. It won\'t touch your current working weights.</div>'
+    + (msg ? '<div class="note" style="color:var(--text)">'+esc(msg)+'</div>' : '')
+    + '</div>'
     + '<div class="card"><div class="label">Bar weight (lb)</div>'
     + '<input class="num" inputmode="decimal" value="'+S.bar+'" onchange="S.bar=Number(this.value)||45;save();render()">'
     + '<div class="label" style="margin-top:14px">Plates you own (one side, comma separated)</div>'

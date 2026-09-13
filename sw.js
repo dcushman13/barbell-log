@@ -1,4 +1,4 @@
-var CACHE = "barbell-log-v4";
+var CACHE = "barbell-log-v6";
 var FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", function(e){
