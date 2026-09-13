@@ -28,8 +28,15 @@ input,select{font:inherit;background:var(--card2);color:var(--text);
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .label{font-size:12px;color:var(--dim)}
 .sub{font-size:13px;color:var(--dim)}
-.btn{background:var(--card2);border:1px solid var(--line);border-radius:12px;
-  padding:13px 16px;font-size:16px;font-weight:500;display:block;width:100%;text-align:center}
+.btn{background:var(--card2);border:1px solid var(--line);border-radius:12px;color:var(--text);
+  padding:13px 16px;font-size:16px;font-weight:500;display:block;width:100%;text-align:center;
+  text-decoration:none}
+a.btn,a.btn:visited,a.btn:hover{color:var(--text);text-decoration:none}
+a.btn.solid,a.btn.solid:visited{color:#fff}
+.tabbar{display:flex;gap:8px;margin-bottom:16px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:5px}
+.tabbar button{flex:1;padding:11px;border-radius:10px;font-size:15px;font-weight:500;color:var(--dim)}
+.tabbar button.on{background:var(--card2);color:var(--text);border:1px solid var(--line)}
 .btn.solid{background:var(--done);border-color:var(--done);color:#fff}
 .btn.warn{background:transparent;border-color:var(--rest);color:var(--rest)}
 .btn:disabled{opacity:.4}
@@ -98,7 +105,8 @@ var DEFAULT = {
   schedule: {liftDays:["MO","TH"], liftTime:"17:30", runDays:["TU","FR","SA"], runTime:"07:00"}
 };
 
-var S = null, view = "home", session = null, restEnd = null, editing = null, tick = null, msg = "";
+var S = null, view = "home", tab = "lift", session = null, restEnd = null, msg = "";
+var navStack = [{v:"home", t:"lift"}];
 
 // ---------- storage ----------
 function load(){
@@ -459,7 +467,37 @@ function delWorkout(id){
   if(S.nextId === id) S.nextId = S.workouts[0].id;
   save(); render();
 }
-function go(v){ view = v; msg = ""; render(); }
+function go(v){
+  view = v; msg = "";
+  navStack.push({v:v, t:tab});
+  try { history.pushState({i:navStack.length-1}, ""); } catch(e){}
+  render();
+}
+function setTab(t){
+  if(tab === t && view === "home") return;
+  tab = t; view = "home"; msg = "";
+  navStack.push({v:"home", t:t});
+  try { history.pushState({i:navStack.length-1}, ""); } catch(e){}
+  render();
+}
+function back(){
+  if(navStack.length > 1){ navStack.pop(); }
+  var top = navStack[navStack.length-1];
+  view = top.v; tab = top.t; msg = "";
+  render();
+}
+window.addEventListener("popstate", function(){
+  if(navStack.length > 1){
+    navStack.pop();
+    var top = navStack[navStack.length-1];
+    view = top.v; tab = top.t; msg = "";
+    render();
+  }
+});
+function goBack(){
+  // in-app back button: let the browser drive so history stays in sync
+  if(navStack.length > 1) history.back(); else { view = "home"; render(); }
+}
 
 // ---------- views ----------
 function plateHTML(total){
@@ -473,21 +511,107 @@ function plateHTML(total){
   return h;
 }
 
+
+// ---------- charts ----------
+function seriesFor(name){
+  var out = [];
+  for(var i = S.history.length - 1; i >= 0; i--){
+    var w = S.history[i];
+    for(var j = 0; j < w.lifts.length; j++)
+      if(w.lifts[j].name === name) out.push({d:w.date, v:w.lifts[j].weight});
+  }
+  return out;
+}
+function bodySeries(){
+  var out = [];
+  for(var i = S.history.length - 1; i >= 0; i--)
+    if(S.history[i].bw != null) out.push({d:S.history[i].date, v:S.history[i].bw});
+  return out;
+}
+function chartNames(){
+  var seen = {}, out = [];
+  S.history.forEach(function(w){ w.lifts.forEach(function(l){
+    if(!seen[l.name]){ seen[l.name] = 1; out.push(l.name); } }); });
+  return out;
+}
+function shortDate(d){ var p = String(d).split("-"); return p.length===3 ? (+p[1])+"/"+(+p[2]) : d; }
+
+function chartSVG(pts){
+  if(!pts.length) return '<div class="sub">Nothing logged for this yet.</div>';
+  var W = 340, H = 190, L = 44, R = 10, T = 14, B = 26;
+  var vs = pts.map(function(p){ return p.v; });
+  var mn = Math.min.apply(null, vs), mx = Math.max.apply(null, vs);
+  if(mn === mx){ mn -= 5; mx += 5; }
+  var span = mx - mn; mn -= span*0.12; mx += span*0.12;
+  function X(i){ return pts.length === 1 ? L + (W-L-R)/2 : L + i*(W-L-R)/(pts.length-1); }
+  function Y(v){ return T + (mx-v)/(mx-mn)*(H-T-B); }
+  var g = "";
+  for(var k = 0; k <= 2; k++){
+    var v = mn + (mx-mn)*k/2, y = Y(v);
+    g += '<line x1="'+L+'" y1="'+y.toFixed(1)+'" x2="'+(W-R)+'" y2="'+y.toFixed(1)+'" stroke="var(--line)" stroke-width="1"/>'
+       + '<text x="'+(L-6)+'" y="'+(y+4).toFixed(1)+'" fill="var(--dim)" font-size="11" text-anchor="end">'+Math.round(v)+'</text>';
+  }
+  var d = pts.map(function(p,i){ return (i?"L":"M") + X(i).toFixed(1) + " " + Y(p.v).toFixed(1); }).join(" ");
+  var dots = pts.map(function(p,i){
+    return '<circle cx="'+X(i).toFixed(1)+'" cy="'+Y(p.v).toFixed(1)+'" r="3.5" fill="var(--done)"/>'; }).join("");
+  var xl = '<text x="'+L+'" y="'+(H-6)+'" fill="var(--dim)" font-size="11">'+shortDate(pts[0].d)+'</text>';
+  if(pts.length > 1)
+    xl += '<text x="'+(W-R)+'" y="'+(H-6)+'" fill="var(--dim)" font-size="11" text-anchor="end">'+shortDate(pts[pts.length-1].d)+'</text>';
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block" xmlns="http://www.w3.org/2000/svg">'
+    + g + '<path d="'+d+'" fill="none" stroke="var(--done)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    + dots + xl + '</svg>';
+}
+
+function vCharts(){
+  var names = chartNames();
+  var pick = window.__chart;
+  if(!pick || (pick !== "__bw" && names.indexOf(pick) < 0)) pick = names[0] || "__bw";
+  var pts = pick === "__bw" ? bodySeries() : seriesFor(pick);
+  var pills = names.map(function(n){
+      return '<button class="pill'+(pick===n?' on':'')+'" onclick="window.__chart='+JSON.stringify(n).replace(/"/g,"&quot;")+';render()">'+esc(n)+'</button>';
+    }).join("")
+    + '<button class="pill'+(pick==="__bw"?' on':'')+'" onclick="window.__chart=\'__bw\';render()">Body weight</button>';
+  var head = "";
+  if(pts.length){
+    var first = pts[0].v, last = pts[pts.length-1].v, diff = last - first;
+    head = '<div class="row" style="margin-bottom:12px"><div><div class="label">Latest</div>'
+      + '<div class="num" style="font-size:30px;font-weight:600">'+last+'</div></div>'
+      + '<div style="text-align:right"><div class="label">Change</div>'
+      + '<div class="num" style="font-size:18px;color:'+(diff>=0?'var(--done)':'var(--rest)')+'">'
+      + (diff>0?"+":"")+Math.round(diff*10)/10+'</div>'
+      + '<div class="sub">over '+pts.length+' session'+(pts.length===1?'':'s')+'</div></div></div>';
+  }
+  return '<div class="head"><div class="h1">Progress</div><button class="link" onclick="goBack()">Back</button></div>'
+    + '<div style="margin-bottom:12px">'+pills+'</div>'
+    + '<div class="card">' + head + chartSVG(pts) + '</div>'
+    + (pick === "__bw" && !pts.length
+        ? '<div class="note">Body weight is recorded when you type it in at the end of a workout.</div>' : '');
+}
+
 function vHome(){
+  return '<div class="head"><div class="h1">Barbell Log</div><div class="link num">'
+    + (tab === "lift" ? S.history.length + ' logged' : S.activities.length + ' logged') + '</div></div>'
+    + '<div class="tabbar">'
+    + '<button class="'+(tab==="lift"?"on":"")+'" onclick="setTab(\'lift\')">Lifting</button>'
+    + '<button class="'+(tab==="cardio"?"on":"")+'" onclick="setTab(\'cardio\')">Cardio</button></div>'
+    + (tab === "cardio" ? pCardio() : pLift());
+}
+
+function pLift(){
   var w = workout(S.nextId), last = S.history[0];
   var lifts = w.lifts.map(function(l){
     return '<div class="item"><span>'+esc(l.name)+'</span><span class="sub num">'+
       l.sets+'×'+l.reps+' · '+wt(l.name)+' lb</span></div>';
   }).join("") || '<div class="sub">No exercises yet. Add some in Workouts.</div>';
-  return '<div class="head"><div class="h1">Barbell Log</div><div class="link num">'+S.history.length+' logged</div></div>'
+  var resume = session ? '<button class="btn solid" style="margin-bottom:12px" onclick="view=\'workout\';navStack.push({v:\'workout\',t:tab});history.pushState({},\'\');render()">Resume '+esc(session.name)+'</button>' : '';
+  return resume
     + '<div class="card"><div class="label">Up next</div>'
     + '<div style="font-size:26px;font-weight:600;margin:6px 0 12px">'+esc(w.name)+'</div>'
     + lifts
     + '<button class="btn solid" style="margin-top:16px" onclick="startWorkout()">Start workout</button></div>'
     + (last ? '<div class="card"><div class="label">Last session</div><div style="margin-top:4px">'+esc(last.name)+' · '+last.date+(last.bw?' · '+last.bw+' lb':'')+'</div>'
         + '<div class="sub" style="margin-top:4px">'+last.lifts.map(function(l){return esc(l.name)+' '+l.weight;}).join(' · ')+'</div></div>' : '')
-    + '<button class="btn" style="margin-bottom:8px" onclick="go(\'cardio\')">Cardio &amp; Garmin import'
-    + (S.activities.length ? ' <span class="sub num">(' + S.activities.length + ')</span>' : '') + '</button>'
+    + '<button class="btn solid" style="margin-bottom:8px" onclick="go(\'charts\')">Progress charts</button>'
     + '<div class="grid" style="margin-bottom:8px">'
     + '<button class="btn" onclick="go(\'plates\')">Plates</button>'
     + '<button class="btn" onclick="go(\'edit\')">Workouts</button>'
@@ -540,7 +664,7 @@ function vWorkout(){
 
 function vPlates(){
   var val = window.__calc == null ? (S.weights["Squat"] || 135) : window.__calc;
-  return '<div class="head"><div class="h1">Plate calculator</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">Plate calculator</div><button class="link" onclick="goBack()">Back</button></div>'
     + '<div class="card"><div class="label">Total weight on the bar</div>'
     + '<div class="row" style="margin-top:10px">'
     + '<button class="step" onclick="window.__calc='+(val-5)+';render()">–</button>'
@@ -586,7 +710,7 @@ function vEdit(){
       + '<input id="newlift" placeholder="Add exercise, e.g. Chin-up">'
       + '<button class="btn" style="flex:0 0 90px" onclick="addLift(\''+w.id+'\')">Add</button></div></div>';
   }).join("");
-  return '<div class="head"><div class="h1">Workouts</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">Workouts</div><button class="link" onclick="goBack()">Back</button></div>'
     + body
     + '<button class="btn" onclick="addWorkout()">Add another workout day</button>'
     + (msg ? '<div class="note" style="color:var(--rest)">'+esc(msg)+'</div>' : '')
@@ -600,18 +724,18 @@ function vCal(){
     }).join("");
   }
   var liftOK = S.schedule.liftDays.length > 0, runOK = S.schedule.runDays.length > 0;
-  return '<div class="head"><div class="h1">Schedule</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">Schedule</div><button class="link" onclick="goBack()">Back</button></div>'
     + '<div class="card"><div class="label">Lifting days</div><div style="margin-top:8px">'+days("liftDays")+'</div>'
     + '<div class="label" style="margin-top:12px">Start time</div>'
     + '<input type="time" value="'+S.schedule.liftTime+'" onchange="S.schedule.liftTime=this.value;save();render()">'
-    + (liftOK ? '<a class="btn" style="margin-top:12px;display:block;text-decoration:none" target="_blank" rel="noopener" href="'
+    + (liftOK ? '<a class="btn solid" style="margin-top:12px" target="_blank" rel="noopener" href="'
         + esc(gcalLink("Lifting", S.schedule.liftDays, S.schedule.liftTime, 60, "Alternating Workout A and B"))
         + '">Add lifting to Google Calendar</a>' : '')
     + '</div>'
     + '<div class="card"><div class="label">Running days</div><div style="margin-top:8px">'+days("runDays")+'</div>'
     + '<div class="label" style="margin-top:12px">Start time</div>'
     + '<input type="time" value="'+S.schedule.runTime+'" onchange="S.schedule.runTime=this.value;save();render()">'
-    + (runOK ? '<a class="btn" style="margin-top:12px;display:block;text-decoration:none" target="_blank" rel="noopener" href="'
+    + (runOK ? '<a class="btn solid" style="margin-top:12px" target="_blank" rel="noopener" href="'
         + esc(gcalLink("Run", S.schedule.runDays, S.schedule.runTime, 35, "Run/walk 3:1, metronome 158"))
         + '">Add runs to Google Calendar</a>' : '')
     + '</div>'
@@ -619,7 +743,7 @@ function vCal(){
     + '<div class="note">The Google Calendar buttons open a prefilled repeating event you confirm once. The .ics file imports both at once into any calendar app.</div>';
 }
 
-function vCardio(){
+function pCardio(){
   var list = S.activities.slice(0,40).map(function(a,i){
     var bits = [];
     if(a.dist) bits.push(a.dist.toFixed(2)+" mi");
@@ -635,8 +759,7 @@ function vCardio(){
       + '<div class="sub num" style="margin-top:8px">'+bits.join(" · ")+'</div></div>';
   }).join("") || '<div class="sub">Nothing logged yet.</div>';
 
-  return '<div class="head"><div class="h1">Cardio</div><button class="link" onclick="go(\'home\')">Back</button></div>'
-    + '<div class="card"><div class="label" style="margin-bottom:10px">Import from Garmin Connect</div>'
+  return '<div class="card"><div class="label" style="margin-bottom:10px">Import from Garmin Connect</div>'
     + '<button class="btn solid" onclick="pickFile()">Choose CSV file</button>'
     + '<div class="note">On a computer, open Garmin Connect → Activities, scroll until everything you want has loaded, then use Export CSV at the top right of the list. Email the file to yourself and pick it here. Duplicates are skipped, so re-importing is safe.</div></div>'
 
@@ -652,14 +775,17 @@ function vCardio(){
     + '<div style="margin-top:10px"><div class="label">Note</div><input id="r_title" placeholder="3:1 run/walk, felt easy"></div>'
     + '<button class="btn" style="margin-top:12px" onclick="addRunManual()">Save activity</button></div>'
     + (msg ? '<div class="note" style="color:var(--text)">'+esc(msg)+'</div>' : '')
+    + '<div class="grid" style="margin-top:4px">'
+    + '<button class="btn" onclick="go(\'cal\')">Schedule</button>'
+    + '<button class="btn" onclick="go(\'export\')">Export</button></div>'
     + '<div class="label" style="margin:18px 0 8px">Logged</div>' + list;
 }
 
 function vHistory(){
   if(!S.history.length)
-    return '<div class="head"><div class="h1">History</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+    return '<div class="head"><div class="h1">History</div><button class="link" onclick="goBack()">Back</button></div>'
       + '<div class="sub">Nothing logged yet. Finish a session and it lands here.</div>';
-  return '<div class="head"><div class="h1">History</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">History</div><button class="link" onclick="goBack()">Back</button></div>'
     + S.history.map(function(w){
         return '<div class="card"><div class="row"><div style="font-weight:500">'+esc(w.name)+'</div>'
           + '<div class="sub">'+w.date+(w.bw?' · '+w.bw+' lb':'')+'</div></div>'
@@ -672,7 +798,7 @@ function vHistory(){
 
 function vExport(){
   var t = exportCSV();
-  return '<div class="head"><div class="h1">Export</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">Export</div><button class="link" onclick="goBack()">Back</button></div>'
     + '<div class="sub" style="margin-bottom:12px">Copy this and paste it into a chat when you want the numbers looked at.</div>'
     + '<button class="btn solid" onclick="copyOut()">Copy to clipboard</button>'
     + '<button class="btn" style="margin-top:8px" onclick="download(\'barbell-log.csv\', exportCSV(), \'text/csv\')">Download CSV</button>'
@@ -687,7 +813,7 @@ function copyOut(){
 }
 
 function vSettings(){
-  return '<div class="head"><div class="h1">Settings</div><button class="link" onclick="go(\'home\')">Back</button></div>'
+  return '<div class="head"><div class="h1">Settings</div><button class="link" onclick="goBack()">Back</button></div>'
     + '<div class="card"><div class="label">Bar weight (lb)</div>'
     + '<input class="num" inputmode="decimal" value="'+S.bar+'" onchange="S.bar=Number(this.value)||45;save();render()">'
     + '<div class="label" style="margin-top:14px">Plates you own (one side, comma separated)</div>'
@@ -709,7 +835,7 @@ function render(){
   var h;
   if(view === "workout" && session) h = vWorkout();
   else if(view === "plates") h = vPlates();
-  else if(view === "cardio") h = vCardio();
+  else if(view === "charts") h = vCharts();
   else if(view === "edit") h = vEdit();
   else if(view === "cal") h = vCal();
   else if(view === "history") h = vHistory();
@@ -720,6 +846,7 @@ function render(){
 }
 
 load();
+try { history.replaceState({i:0}, ""); } catch(e){}
 render();
 if("serviceWorker" in navigator){
   window.addEventListener("load", function(){
