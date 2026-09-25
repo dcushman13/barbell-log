@@ -97,13 +97,16 @@ var DEFAULT = {
     {id:"B", name:"Workout B", lifts:[
       {name:"Squat", sets:3, reps:5, rest:180, warmup:true},
       {name:"Overhead Press", sets:3, reps:5, rest:180, warmup:true},
-      {name:"Deadlift", sets:1, reps:5, rest:180, warmup:true}
+      {name:"Deadlift", sets:1, reps:5, rest:180, warmup:true, minWarm:135}
     ]}
   ],
   nextId: "A",
   fails: {},
   history: [],
   activities: [],
+  food: [],
+  targets: {kcal: 2350, protein: 190},
+  filterJunk: true,
   schedule: {liftDays:["MO","TH"], liftTime:"17:30", runDays:["TU","FR","SA"], runTime:"07:00"}
 };
 
@@ -116,6 +119,12 @@ function load(){
   catch(e){ S = clone(DEFAULT); }
   if(!S.schedule) S.schedule = clone(DEFAULT.schedule);
   if(!S.activities) S.activities = [];
+  if(S.filterJunk === undefined) S.filterJunk = true;
+  if(!S.food) S.food = [];
+  if(!S.targets) S.targets = {kcal: 2350, protein: 190};
+  S.workouts.forEach(function(w){ w.lifts.forEach(function(l){
+    if(l.minWarm === undefined) l.minWarm = /deadlift|clean|snatch|row from floor/i.test(l.name) ? 135 : 0;
+  }); });
 }
 function save(){
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -145,13 +154,16 @@ function platesFor(total){
   return {list:list, rem:rem};
 }
 
-function warmupsFor(work){
+function warmupsFor(work, minW){
   var b = S.bar;
-  if(work <= b + 10) return [{w:b,reps:5},{w:b,reps:5}];
-  var out = [{w:b,reps:5},{w:b,reps:5}], last = b;
+  var start = (minW && minW > b) ? minW : b;
+  if(work <= start + 10) return start === b ? [{w:b,reps:5},{w:b,reps:5}] : [{w:start,reps:5}];
+  var out = start === b ? [{w:b,reps:5},{w:b,reps:5}] : [{w:start,reps:5}];
+  var last = start;
   var steps = [[0.4,5],[0.6,3],[0.8,2]];
   for(var i=0;i<steps.length;i++){
-    var x = round(b + steps[i][0]*(work-b), 5);
+    // round so each side lands on a multiple of 5 — no 2.5s on warm-ups
+    var x = b + Math.round((steps[i][0]*(work-b))/10)*10;
     if(x > last && x < work){ out.push({w:x, reps:steps[i][1]}); last = x; }
   }
   return out;
@@ -176,8 +188,8 @@ function startWorkout(){
   var w = workout(S.nextId);
   session = { id:w.id, name:w.name, date:todayISO(), bw:"", lifts: w.lifts.map(function(l){
     var working = wt(l.name);
-    return { name:l.name, sets:l.sets, reps:l.reps, rest:l.rest, weight:working,
-      warm: l.warmup ? warmupsFor(working).map(function(x){ return {w:x.w, reps:x.reps, done:false}; }) : [],
+    return { name:l.name, sets:l.sets, reps:l.reps, rest:l.rest, weight:working, minWarm:l.minWarm || 0,
+      warm: l.warmup ? warmupsFor(working, l.minWarm).map(function(x){ return {w:x.w, reps:x.reps, done:false}; }) : [],
       logged: new Array(l.sets).fill(null) };
   })};
   restEnd = null; view = "workout"; render();
@@ -196,7 +208,7 @@ function tapWarm(li,wi){
 function bumpSession(li,d){
   var l = session.lifts[li];
   l.weight = Math.max(S.bar, round(l.weight + d, 2.5));
-  if(l.warm.length) l.warm = warmupsFor(l.weight).map(function(x){ return {w:x.w,reps:x.reps,done:false}; });
+  if(l.warm.length) l.warm = warmupsFor(l.weight, l.minWarm).map(function(x){ return {w:x.w,reps:x.reps,done:false}; });
   render();
 }
 function finishWorkout(){
@@ -327,7 +339,7 @@ function importGarmin(text){
 }
 
 function pickFile(handler){
-  var fn = handler === "sl" ? importStronglifts : importGarmin;
+  var fn = handler === "sl" ? importStronglifts : handler === "food" ? importFood : importGarmin;
   var inp = document.createElement("input");
   inp.type = "file";
   inp.accept = ".csv,text/csv,text/plain";
@@ -432,6 +444,81 @@ function addRunManual(){
 }
 function delActivity(i){ S.activities.splice(i,1); save(); render(); }
 
+
+// ---------- food ----------
+var MEALS = ["breakfast","lunch","dinner","snack"];
+
+function foodOn(date){ return S.food.filter(function(f){ return f.date === date; }); }
+function burnOn(date){
+  var n = 0;
+  S.activities.forEach(function(a){ if(String(a.date).slice(0,10) === date) n += (a.cal || 0); });
+  return n;
+}
+function dayTotals(date){
+  var k = 0, p = 0;
+  foodOn(date).forEach(function(f){ k += f.kcal || 0; p += f.protein || 0; });
+  return {kcal:k, protein:p, burn:burnOn(date), net:k - burnOn(date)};
+}
+function lastDays(n){
+  var out = [];
+  for(var i = 0; i < n; i++){
+    var d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - i);
+    var key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+    out.push({date:key, t:dayTotals(key)});
+  }
+  return out;
+}
+function avgOver(n){
+  var rows = lastDays(n).filter(function(r){ return r.t.kcal > 0; });
+  if(!rows.length) return null;
+  var k = 0, p = 0, b = 0;
+  rows.forEach(function(r){ k += r.t.kcal; p += r.t.protein; b += r.t.burn; });
+  return {days:rows.length, kcal:Math.round(k/rows.length), protein:Math.round(p/rows.length),
+    burn:Math.round(b/rows.length), net:Math.round((k-b)/rows.length)};
+}
+function addFood(){
+  function v(id){ var e = document.getElementById(id); return e ? e.value.trim() : ""; }
+  var name = v("f_item"), kcal = Math.round(num(v("f_kcal")));
+  if(!name){ msg = "Give the item a name."; render(); return; }
+  if(!kcal){ msg = "Add a calorie figure."; render(); return; }
+  S.food.unshift({ date: v("f_date") || todayISO(), meal: v("f_meal") || "snack",
+    item: name, kcal: kcal, protein: Math.round(num(v("f_protein"))) });
+  S.food.sort(function(a,b){ return a.date < b.date ? 1 : -1; });
+  msg = ""; save(); render();
+}
+function delFood(date, i){
+  var day = foodOn(date), target = day[i];
+  var j = S.food.indexOf(target);
+  if(j >= 0){ S.food.splice(j,1); save(); render(); }
+}
+function importFood(text){
+  var rows = parseCSV(text);
+  if(rows.length < 2){ msg = "That file didn't have any rows I could read."; render(); return; }
+  var head = rows[0].map(function(h){ return h.trim().toLowerCase(); });
+  function col(){ for(var i=0;i<arguments.length;i++){ var j = head.indexOf(arguments[i]); if(j>=0) return j; } return -1; }
+  var cDate = col("date"), cMeal = col("meal"), cItem = col("item","food","name"),
+      cKcal = col("calories","kcal","cal"), cProt = col("protein","protein_g","g_protein");
+  if(cDate < 0 || cItem < 0 || cKcal < 0){
+    msg = "Need date, item and calories columns."; render(); return;
+  }
+  var added = 0, dupe = 0;
+  for(var r = 1; r < rows.length; r++){
+    var row = rows[r];
+    var date = (row[cDate] || "").trim().slice(0,10).replace(/\//g,"-");
+    var item = (row[cItem] || "").trim();
+    if(!date || !item) continue;
+    var e = { date: date, meal: cMeal >= 0 ? (row[cMeal]||"snack").trim().toLowerCase() : "snack",
+      item: item, kcal: Math.round(num(row[cKcal])), protein: cProt >= 0 ? Math.round(num(row[cProt])) : 0 };
+    var key = e.date + "|" + e.item + "|" + e.kcal;
+    if(S.food.some(function(x){ return x.date+"|"+x.item+"|"+x.kcal === key; })){ dupe++; continue; }
+    S.food.push(e); added++;
+  }
+  S.food.sort(function(a,b){ return a.date < b.date ? 1 : -1; });
+  save();
+  msg = "Imported " + added + " item" + (added===1?"":"s") + (dupe ? ", skipped " + dupe + " already there." : ".");
+  render();
+}
+
 // ---------- calendar ----------
 function nextDateFor(day, time){
   var target = DAYS.indexOf(day), now = new Date();
@@ -501,6 +588,12 @@ function exportCSV(){
       a.sec ? sec2dur(a.sec) : "", paceOf(a), a.hr || "", a.cad || "", a.src].join(","));
   });
   L.push("");
+  L.push("# FOOD");
+  L.push("date,meal,item,calories,protein");
+  S.food.forEach(function(f){
+    L.push([f.date, f.meal, (f.item||"").replace(/,/g," "), f.kcal, f.protein || ""].join(","));
+  });
+  L.push("");
   L.push("# next: " + workout(S.nextId).name);
   L.push("# working weights: " + Object.keys(S.weights).map(function(k){ return k+" "+S.weights[k]; }).join(", "));
   return L.join("\n");
@@ -511,10 +604,14 @@ function addLift(wid){
   var name = (document.getElementById("newlift").value || "").trim();
   if(!name){ msg = "Give the exercise a name first."; render(); return; }
   var w = workout(wid);
-  w.lifts.push({name:name, sets:3, reps:5, rest:150, warmup:false});
+  w.lifts.push({name:name, sets:3, reps:5, rest:150, warmup:false, minWarm:/deadlift|clean|snatch/i.test(name) ? 135 : 0});
   if(S.weights[name] == null) S.weights[name] = S.bar;
   if(S.inc[name] == null) S.inc[name] = 5;
   msg = ""; save(); render();
+}
+function setMinWarm(wid, i, val){
+  workout(wid).lifts[i].minWarm = Math.max(0, Math.round(num(val)));
+  save(); render();
 }
 function delLift(wid, i){ workout(wid).lifts.splice(i,1); save(); render(); }
 function moveLift(wid, i, d){
@@ -593,6 +690,29 @@ function plateHTML(total){
 
 // ---------- cardio rollups ----------
 function onFoot(t){ return /run|walk|hik|treadmill|jog/i.test(t || ""); }
+function realFoot(a){
+  if(!onFoot(a.type)) return false;
+  if(!S.filterJunk) return (a.dist > 0);
+  if(!(a.dist > 0) || !(a.sec > 0)) return false;
+  var t = a.type || "", minCad, loPace, hiPace;
+  if(/hik/i.test(t)){ minCad = 40; loPace = 15; hiPace = 60; }
+  else if(/run|jog|treadmill/i.test(t)){ minCad = 100; loPace = 4; hiPace = 16; }
+  else { minCad = 60; loPace = 10; hiPace = 25; }
+  if(a.cad > 0) return a.cad >= minCad;
+  var mpm = a.sec / a.dist / 60;
+  return mpm >= loPace && mpm <= hiPace;
+}
+function junkCount(days){
+  var cut = new Date(); cut.setHours(0,0,0,0);
+  cut.setDate(cut.getDate() - (days - 1));
+  var n = 0;
+  S.activities.forEach(function(a){
+    var d = dayKey(a);
+    if(isNaN(d) || d < cut) return;
+    if(onFoot(a.type) && !realFoot(a)) n++;
+  });
+  return n;
+}
 function dayKey(a){ return new Date(String(a.date).slice(0,10) + "T00:00:00"); }
 
 function rolling(days){
@@ -604,17 +724,18 @@ function rolling(days){
     if(isNaN(d) || d < cut) return;
     all++;
     cals += a.cal || 0;
-    if(onFoot(a.type)){ miles += a.dist || 0; foot++; }
+    if(realFoot(a)){ miles += a.dist || 0; foot++; }
   });
   return {miles:miles, cals:cals, foot:foot, all:all};
 }
 
 function pacePoints(kind){
-  var re = kind === "walk" ? /walk|hik/i : /run|jog|treadmill/i;
+  var re = kind === "walk" ? /walk/i : /run|jog|treadmill/i;
   var out = [];
   for(var i = S.activities.length - 1; i >= 0; i--){
     var a = S.activities[i];
     if(!re.test(a.type || "")) continue;
+    if(!realFoot(a)) continue;
     if(!(a.dist > 0) || !(a.sec > 0)) continue;
     var v = a.sec / a.dist;
     if(!isFinite(v) || v <= 0) continue;
@@ -749,18 +870,87 @@ function vCharts(){
         ? '<div class="note">Body weight is recorded when you type it in at the end of a workout.</div>' : '');
 }
 
+function pFood(){
+  var today = todayISO(), t = dayTotals(today);
+  var left = S.targets.kcal - t.kcal;
+  var pct = Math.min(100, Math.round(t.kcal / S.targets.kcal * 100));
+
+  var ring = '<div class="card">'
+    + '<div class="row"><div class="label">Today</div><div class="label">' + today + '</div></div>'
+    + '<div style="display:flex;align-items:baseline;gap:8px;margin:8px 0 2px">'
+    + '<div class="num" style="font-size:38px;font-weight:600">' + t.kcal + '</div>'
+    + '<div class="sub">of ' + S.targets.kcal + ' kcal</div></div>'
+    + '<div style="height:8px;border-radius:4px;background:var(--card2);overflow:hidden;margin:10px 0">'
+    + '<div style="height:100%;width:' + pct + '%;background:' + (left < 0 ? 'var(--rest)' : 'var(--done)') + '"></div></div>'
+    + '<div class="row"><span class="sub">' + (left >= 0 ? left + ' left' : Math.abs(left) + ' over') + '</span>'
+    + '<span class="sub num">protein ' + t.protein + ' / ' + S.targets.protein + ' g</span></div>'
+    + '<div class="item" style="margin-top:8px"><span class="sub">Logged burn today</span>'
+    + '<span class="num">' + t.burn + ' kcal</span></div>'
+    + '<div class="item"><span class="sub">Net</span><span class="num">' + t.net + ' kcal</span></div>'
+    + '</div>';
+
+  var list = foodOn(today).map(function(f, i){
+    return '<div class="item"><div><div>' + esc(f.item) + '</div>'
+      + '<div class="sub">' + esc(f.meal) + (f.protein ? ' · ' + f.protein + 'g protein' : '') + '</div></div>'
+      + '<div class="row" style="gap:10px"><span class="num">' + f.kcal + '</span>'
+      + '<button class="step" style="width:28px;height:28px;font-size:15px;color:var(--rest)" onclick="delFood(\'' + today + '\',' + i + ')">×</button></div></div>';
+  }).join("") || '<div class="sub">Nothing logged today.</div>';
+
+  var form = '<div class="card"><div class="label" style="margin-bottom:10px">Add an item</div>'
+    + '<input id="f_item" placeholder="Sausage, cheddar & egg sandwich">'
+    + '<div class="grid" style="margin-top:10px">'
+    + '<div><div class="label">Calories</div><input id="f_kcal" inputmode="numeric" placeholder="480"></div>'
+    + '<div><div class="label">Protein (g)</div><input id="f_protein" inputmode="numeric" placeholder="21"></div></div>'
+    + '<div class="grid" style="margin-top:10px">'
+    + '<div><div class="label">Meal</div><select id="f_meal">'
+    + MEALS.map(function(m){ return '<option value="' + m + '">' + m + '</option>'; }).join("")
+    + '</select></div>'
+    + '<div><div class="label">Date</div><input id="f_date" type="date" value="' + today + '"></div></div>'
+    + '<button class="btn" style="margin-top:12px" onclick="addFood()">Save item</button>'
+    + (msg ? '<div class="note" style="color:var(--text)">' + esc(msg) + '</div>' : '')
+    + '</div>';
+
+  function avgBlock(n, label){
+    var a = avgOver(n);
+    if(!a) return '';
+    return '<div class="item"><div><div>' + label + '</div>'
+      + '<div class="sub">' + a.days + ' day' + (a.days===1?'':'s') + ' logged</div></div>'
+      + '<div style="text-align:right"><div class="num">' + a.kcal + ' in</div>'
+      + '<div class="sub num">' + a.burn + ' out · net ' + a.net + '</div></div></div>';
+  }
+  var roll = '<div class="card"><div class="label" style="margin-bottom:4px">Daily averages</div>'
+    + (avgBlock(7, "Last 7 days") + avgBlock(30, "Last 30 days") || '<div class="sub">Log a few days to see averages.</div>')
+    + '</div>';
+
+  var week = lastDays(7).map(function(r){
+    if(!r.t.kcal && !r.t.burn) return '';
+    return '<div class="item"><span class="sub">' + shortDate(r.date) + '</span>'
+      + '<span class="num">' + (r.t.kcal || '—') + ' in · ' + (r.t.burn || 0) + ' out · '
+      + '<b>' + r.t.net + '</b></span></div>';
+  }).join("");
+
+  return ring + form
+    + '<div class="card"><div class="label" style="margin-bottom:4px">Today\'s items</div>' + list + '</div>'
+    + roll
+    + (week ? '<div class="card"><div class="label" style="margin-bottom:4px">This week</div>' + week + '</div>' : '')
+    + '<div class="note">Burn figures come from your logged activities. Garmin\'s calorie number includes the resting calories you\'d have burned anyway, so treat net as optimistic.</div>';
+}
+
 function vHome(){
   var dumbbell = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" '
     + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
     + '<path d="M4 9v6M7 6.5v11M17 6.5v11M20 9v6M7 12h10"/></svg>';
   return '<div class="head" style="align-items:center">'
     + '<div><div class="h1">Barbell Log</div>'
-    + '<div class="sub num">' + (tab === "lift" ? S.history.length + ' sessions' : S.activities.length + ' activities') + '</div></div>'
+    + '<div class="sub num">' + (tab === "lift" ? S.history.length + ' sessions'
+        : tab === "food" ? (dayTotals(todayISO()).kcal + ' kcal today')
+        : S.activities.length + ' activities') + '</div></div>'
     + '<button class="icon" onclick="go(\'settings\')" aria-label="Settings">' + dumbbell + '</button></div>'
     + '<div class="tabbar">'
     + '<button class="'+(tab==="lift"?"on":"")+'" onclick="setTab(\'lift\')">Lifting</button>'
-    + '<button class="'+(tab==="cardio"?"on":"")+'" onclick="setTab(\'cardio\')">Cardio</button></div>'
-    + (tab === "cardio" ? pCardio() : pLift());
+    + '<button class="'+(tab==="cardio"?"on":"")+'" onclick="setTab(\'cardio\')">Cardio</button>'
+    + '<button class="'+(tab==="food"?"on":"")+'" onclick="setTab(\'food\')">Food</button></div>'
+    + (tab === "cardio" ? pCardio() : tab === "food" ? pFood() : pLift());
 }
 
 function pLift(){
@@ -865,6 +1055,8 @@ function vEdit(){
         + '<button class="step" onclick="bumpWeight(\''+esc(l.name)+'\',5)">+</button></div></div>'
         + '<div class="row" style="margin-top:12px"><span class="sub">Warm-up sets</span>'
         + '<button class="pill'+(l.warmup?' on':'')+'" onclick="setField(\''+w.id+'\','+i+',\'warmup\')">'+(l.warmup?'On':'Off')+'</button></div>'
+        + (l.warmup ? '<div style="margin-top:10px"><div class="label">Lightest warm-up weight (0 = empty bar)</div>'
+            + '<input class="num" inputmode="numeric" value="'+(l.minWarm||0)+'" onchange="setMinWarm(\''+w.id+'\','+i+',this.value)"></div>' : '')
         + '</div>';
     }).join("") || '<div class="sub" style="margin-bottom:8px">No exercises yet.</div>';
     return '<div class="card"><div class="row" style="margin-bottom:12px">'
@@ -919,7 +1111,8 @@ function pCardio(){
     if(a.cad) bits.push(a.cad+" spm");
     return '<div class="card" style="background:var(--card2);padding:13px">'
       + '<div class="row"><div><div style="font-weight:500">'+esc(a.title || a.type)+'</div>'
-      + '<div class="sub">'+a.date+' · '+esc(a.type)+(a.src==="garmin"?" · Garmin":"")+'</div></div>'
+      + '<div class="sub">'+a.date+' · '+esc(a.type)+(a.src==="garmin"?" · Garmin":"")
+      + (S.filterJunk && onFoot(a.type) && !realFoot(a) ? ' · <span style="color:var(--rest)">not counted</span>' : '')+'</div></div>'
       + '<button class="step" style="width:30px;height:30px;font-size:15px;color:var(--rest)" onclick="delActivity('+i+')">×</button></div>'
       + '<div class="sub num" style="margin-top:8px">'+bits.join(" · ")+'</div></div>';
   }).join("") || '<div class="sub">Nothing logged yet.</div>';
@@ -938,6 +1131,7 @@ function pCardio(){
     + stat("Sessions", w.all, m.all, "")
     + '<button class="btn" style="margin-top:14px" onclick="window.__chart=\'__runpace\';go(\'charts\')">Pace charts</button>'
     + (m.cals === 0 && m.all > 0 ? '<div class="note">No calorie data on these — Garmin imports carry it, manual entries need the field filled in.</div>' : '')
+    + (S.filterJunk && junkCount(30) ? '<div class="note">' + junkCount(30) + ' walk-tagged activit' + (junkCount(30)===1?'y':'ies') + ' excluded as GPS drift. Turn the filter off in Settings to include them.</div>' : '')
     + '</div>';
 
   return totals
@@ -998,9 +1192,19 @@ function vSettings(){
     + '<button class="btn solid" onclick="pickFile()">Garmin Connect CSV</button>'
     + '<div class="note">On a computer, open Garmin Connect \u2192 Activities, scroll until everything you want has loaded, then Export CSV at the top right. Email it to yourself and pick it here.</div>'
     + '<button class="btn solid" style="margin-top:14px" onclick="pickFile(\'sl\')">StrongLifts CSV</button>'
-    + '<div class="note">StrongLifts app \u2192 Settings \u2192 Export data. Brings in your past sessions with every set. It won\'t touch your current working weights.</div>'
+    + '<div class="note">StrongLifts app \u2192 Settings \u2192 Export data. Brings in your past sessions with every set.</div>'
+    + '<button class="btn solid" style="margin-top:14px" onclick="pickFile(\'food\')">Food log CSV</button>'
+    + '<div class="note">Columns: date, meal, item, calories, protein. Duplicates are skipped.</div>'
     + (msg ? '<div class="note" style="color:var(--text)">'+esc(msg)+'</div>' : '')
     + '</div>'
+    + '<div class="card"><div class="label">Daily calorie target</div>'
+    + '<input class="num" inputmode="numeric" value="'+S.targets.kcal+'" onchange="S.targets.kcal=Math.round(num(this.value))||2350;save();render()">'
+    + '<div class="label" style="margin-top:14px">Daily protein target (g)</div>'
+    + '<input class="num" inputmode="numeric" value="'+S.targets.protein+'" onchange="S.targets.protein=Math.round(num(this.value))||190;save();render()">'
+    + '</div>'
+    + '<div class="card"><div class="row"><div><div class="label">Filter GPS drift</div>'
+    + '<div class="sub" style="margin-top:4px">Ignore walk-tagged activities under 60 spm</div></div>'
+    + '<button class="pill'+(S.filterJunk?' on':'')+'" onclick="S.filterJunk=!S.filterJunk;save();render()">'+(S.filterJunk?'On':'Off')+'</button></div></div>'
     + '<div class="card"><div class="label">Bar weight (lb)</div>'
     + '<input class="num" inputmode="decimal" value="'+S.bar+'" onchange="S.bar=Number(this.value)||45;save();render()">'
     + '<div class="label" style="margin-top:14px">Plates you own (one side, comma separated)</div>'
