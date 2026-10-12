@@ -157,6 +157,20 @@ function platesFor(total){
   return {list:list, rem:rem};
 }
 
+// At 135 lb and up, warm-up loads use only 45s and 25s per side.
+// Snap a target weight to the nearest total that those plates can make.
+function snap4525(w){
+  if(w < 135) return w;
+  var b = S.bar, per = (w - b) / 2, best = null, bd = 1e9;
+  for(var a = 0; a <= 8; a++){
+    for(var c = 0; c <= 8; c++){
+      var p = 45*a + 25*c, d = Math.abs(p - per);
+      if(d < bd - 1e-9 || (Math.abs(d - bd) < 1e-9 && p < best)){ bd = d; best = p; }
+    }
+  }
+  return b + 2*best;
+}
+
 function warmupsFor(work, minW){
   var b = S.bar;
   var start = (minW && minW > b) ? minW : b;
@@ -166,8 +180,9 @@ function warmupsFor(work, minW){
   var steps = [[0.4,5],[0.6,3],[0.8,2]];
   for(var i=0;i<steps.length;i++){
     // round so each side lands on a multiple of 5 — no 2.5s on warm-ups
-    var x = b + Math.round((steps[i][0]*(work-b))/10)*10;
-    if(x > last && x < work){ out.push({w:x, reps:steps[i][1]}); last = x; }
+    var x = snap4525(b + Math.round((steps[i][0]*(work-b))/10)*10);
+    // above 135, skip a step that snapping left within 20 lb of the previous one
+    if(x > last && x < work && !(x >= 135 && x - last < 20)){ out.push({w:x, reps:steps[i][1]}); last = x; }
   }
   return out;
 }
