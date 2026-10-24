@@ -171,7 +171,34 @@ function snap4525(w){
   return b + 2*best;
 }
 
-function warmupsFor(work, minW){
+function squatWarmups(work){
+  var b = S.bar, out = [{w:b,reps:5},{w:b,reps:5}];
+  if(work <= b + 10) return [{w:b,reps:5},{w:b,reps:5}];
+  var last = b;
+  function add(x, r){ if(x > last && x < work){ out.push({w:x, reps:r}); last = x; } }
+  add(95, 5); add(135, 3);
+  if(work > 135){
+    // extra warm-up steps above 135: 1 up to 225, 2 up to 285, 3 beyond
+    var fr = work <= 225 ? [[0.9,2]] : work <= 285 ? [[0.7,3],[0.9,2]] : [[0.6,3],[0.78,2],[0.92,1]];
+    var opts = [];
+    for(var a=0;a<=6;a++) for(var c=0;c<=4;c++) for(var d=0;d<=4;d++) opts.push(45*a+25*c+10*d);
+    fr.forEach(function(f){
+      var target = b + Math.round((f[0]*(work-b))/10)*10;
+      var best = null, bd = 1e9;
+      opts.forEach(function(p){
+        var tot = b + 2*p;
+        if(tot > 135 && tot < work && tot - last >= 20){
+          var dd = Math.abs(tot - target);
+          if(dd < bd || (dd === bd && p < best)){ bd = dd; best = p; }
+        }
+      });
+      if(best !== null) add(b + 2*best, f[1]);
+    });
+  }
+  return out;
+}
+function warmupsFor(work, minW, name){
+  if(name === "Squat") return squatWarmups(work);
   var b = S.bar;
   var start = (minW && minW > b) ? minW : b;
   if(work <= start + 10) return start === b ? [{w:b,reps:5},{w:b,reps:5}] : [{w:start,reps:5}];
@@ -207,7 +234,7 @@ function startWorkout(){
   session = { id:w.id, name:w.name, date:todayISO(), bw:"", lifts: w.lifts.map(function(l){
     var working = wt(l.name);
     return { name:l.name, sets:l.sets, reps:l.reps, rest:l.rest, weight:working, minWarm:l.minWarm || 0,
-      warm: l.warmup ? warmupsFor(working, l.minWarm).map(function(x){ return {w:x.w, reps:x.reps, done:false}; }) : [],
+      warm: l.warmup ? warmupsFor(working, l.minWarm, l.name).map(function(x){ return {w:x.w, reps:x.reps, done:false}; }) : [],
       logged: new Array(l.sets).fill(null) };
   })};
   restEnd = null; view = "workout"; render();
@@ -227,7 +254,7 @@ function tapWarm(li,wi){
 function bumpSession(li,d){
   var l = session.lifts[li];
   l.weight = Math.max(S.bar, round(l.weight + d, 2.5));
-  if(l.warm.length) l.warm = warmupsFor(l.weight, l.minWarm).map(function(x){ return {w:x.w,reps:x.reps,done:false}; });
+  if(l.warm.length) l.warm = warmupsFor(l.weight, l.minWarm, l.name).map(function(x){ return {w:x.w,reps:x.reps,done:false}; });
   render();
 }
 function finishWorkout(){
