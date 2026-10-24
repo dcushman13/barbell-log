@@ -35,9 +35,9 @@ a.btn,a.btn:visited,a.btn:hover{color:var(--text);text-decoration:none}
 a.btn.solid,a.btn.solid:visited{color:#fff}
 .icon{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--card2);
   display:flex;align-items:center;justify-content:center;color:var(--text);flex:none}
-.tabbar{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border:1px solid var(--line);
+.tabbar{display:flex;gap:8px;margin-bottom:16px;background:var(--card);border:1px solid var(--line);
   border-radius:14px;padding:5px}
-.tabbar button{flex:1;padding:11px 4px;border-radius:10px;font-size:14px;font-weight:500;color:var(--dim);white-space:nowrap}
+.tabbar button{flex:1;padding:11px;border-radius:10px;font-size:15px;font-weight:500;color:var(--dim)}
 .tabbar button.on{background:var(--card2);color:var(--text);border:1px solid var(--line)}
 .btn.solid{background:var(--done);border-color:var(--done);color:#fff}
 .btn.warn{background:transparent;border-color:var(--rest);color:var(--rest)}
@@ -955,156 +955,6 @@ function pFood(){
     + '<div class="note">Burn figures come from your logged activities. Garmin\'s calorie number includes the resting calories you\'d have burned anyway, so treat net as optimistic.</div>';
 }
 
-// ---------- PFA prep ----------
-var PFA_START = new Date(2026, 9, 12);   // Mon Oct 12
-var PFA_DAYS = 40;                       // through Fri Nov 20
-var PFA_BCA = "2026-11-18", PFA_PFA = "2026-11-20";
-var pfaPast = false, pfaCache = null;
-
-function isoOf(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
-function isoDate(iso){ var p = iso.split("-"); return new Date(+p[0], +p[1]-1, +p[2]); }
-function daysUntil(iso){
-  var t = isoDate(todayISO()), d = isoDate(iso);
-  return Math.round((d - t) / 86400000);
-}
-
-var Z2 = "HR 116–135 (Zone 2). Hold the cap even if it feels too easy.";
-var TXT = {
-  lift:  ["Lift", "Next workout in your A/B rotation. Start it from the Lifting tab."],
-  z2s:   ["Zone 2 run", "30–35 min. " + Z2 + " Cadence blocks at 152 (1 min on, 2 min off)."],
-  z2l:   ["Long Zone 2 run", "40–45 min. " + Z2 + " Cadence blocks at 152."],
-  z2e:   ["Easy run", "25 min. " + Z2],
-  push1: ["Push-ups + plank", "5 sets of push-ups at about half your max, stopping 3–4 reps short of failure. 3 plank holds at about 60% of max. 20-min walk."],
-  push2: ["Push-ups + plank", "6 sets of push-ups at about 60% of max, stopping 3 reps short of failure. 3 plank holds at about 70% of max. 20-min walk."],
-  bike:  ["12-min bike practice", "Steady hard effort for the full 12 minutes. Log the calories below."],
-  intv:  ["Intervals", "10 min easy warm-up, then 5 × 2 min at HR 155–165 with 2 min easy between (HR under 135 before each restart), then 10 min easy."],
-  rest:  ["Rest + waist tape", "Full rest. Take your waist at the umbilicus, normal breathing after several exhales, and log it below."],
-  tape:  ["Rest + waist tape", "Full rest. Take your waist at the umbilicus, normal breathing after several exhales, and log it below."],
-  test:  ["Baseline test, then run", "Warmed up: 2-minute max push-ups, then a max plank. Log both below. This is a floor, since you pressed yesterday; Sunday gives the clean number. Afterward, a Zone 2 run, 30–35 min. " + Z2],
-  base2: ["Clean baseline + waist tape", "Rest day, so you're fresh: 2-minute max push-ups and a max plank. This is the number we compare against. Log both and your waist below."],
-  retest:["Retest + waist tape", "2-minute max push-ups and a max plank, fresh. Log both and your waist below."],
-  last:  ["Last heavy lift", "Your last heavy upper-body day before the test. Lift as normal, no extras afterward."],
-  walk:  ["Easy walk", "20–30 min easy walk. Nothing hard."],
-  light: ["Light push-ups + plank", "3 submaximal push-up sets and 1 plank at about 70% of max. Then a 20-min walk."],
-  off:   ["Full rest", "No training. Normal food and plenty of water."],
-  bca:   ["BCA weigh-in", "Eat and drink normally. Don't alter anything: no breath-holding, no dehydration, no sodium games. Waist is taken at the umbilicus."],
-  rest2: ["Rest", "Light walk only. Normal food, hydrate, early bed."],
-  drill: ["Drill weekend", "Work day. No run this weekend. A 20-min walk is optional; otherwise rest. Keep eating to your targets."],
-  pfa:   ["PFA", "Push-ups, plank, then the 12-minute bike. Normal breakfast, hydrate, warm up properly."]
-};
-
-function pfaPlan(){
-  if(pfaCache) return pfaCache;
-  var over = {
-    "2026-10-13":"test", "2026-10-17":"z2l", "2026-10-18":"base2", "2026-10-24":"drill", "2026-10-25":"drill", "2026-10-27":"bike",
-    "2026-11-08":"retest", "2026-11-10":"bike", "2026-11-11":"z2e",
-    "2026-11-12":"last", "2026-11-13":"walk", "2026-11-14":"z2e", "2026-11-15":"tape",
-    "2026-11-16":"light", "2026-11-17":"off", "2026-11-18":"bca", "2026-11-19":"rest2", "2026-11-20":"pfa"
-  };
-  var out = [];
-  for(var i = 0; i < PFA_DAYS; i++){
-    var d = new Date(PFA_START.getFullYear(), PFA_START.getMonth(), PFA_START.getDate() + i);
-    var iso = isoOf(d), dow = d.getDay(), phase, key;
-    phase = iso < "2026-11-02" ? 1 : iso < "2026-11-12" ? 2 : 3;
-    if(over[iso]) key = over[iso];
-    else if(phase === 1) key = {1:"lift",2:"z2s",3:"lift",4:"push1",5:"lift",6:"z2l",0:"rest"}[dow];
-    else key = {1:"lift",2:"bike",3:"lift",4:"push2",5:"lift",6:"intv",0:"tape"}[dow];
-    out.push({iso:iso, d:d, dow:dow, phase:phase, key:key, title:TXT[key][0], text:TXT[key][1]});
-  }
-  pfaCache = out;
-  return out;
-}
-
-function pfaHeadSub(){
-  var b = daysUntil(PFA_BCA), p = daysUntil(PFA_PFA);
-  if(p < 0) return "PFA window passed";
-  if(b < 0) return "PFA in " + p + " day" + (p === 1 ? "" : "s");
-  return "BCA in " + b + " d · PFA in " + p + " d";
-}
-
-function pfaToggle(iso){ S.pfa.done[iso] = !S.pfa.done[iso]; save(); render(); }
-function pfaPastToggle(){ pfaPast = !pfaPast; render(); }
-function pfaSaveLog(){
-  function v(id){ var e = document.getElementById(id); return e ? e.value.trim() : ""; }
-  var e = {d: todayISO(), pu: v("pfa-pu"), plank: v("pfa-plank"), bike: v("pfa-bike"), waist: v("pfa-waist")};
-  if(!e.pu && !e.plank && !e.bike && !e.waist){ msg = "Enter at least one value."; render(); return; }
-  S.pfa.log.unshift(e); msg = ""; save(); render();
-}
-function pfaDelLog(i){ if(confirm("Delete this entry?")){ S.pfa.log.splice(i,1); save(); render(); } }
-
-function pPfa(){
-  var plan = pfaPlan(), today = todayISO();
-  var bcaD = daysUntil(PFA_BCA), pfaD = daysUntil(PFA_PFA);
-  var done = 0, total = 0;
-  plan.forEach(function(p){ if(p.iso <= today){ total++; if(S.pfa.done[p.iso]) done++; } });
-
-  var top = '<div class="card">'
-    + '<div class="row"><div><div class="label">BCA</div><div style="font-size:20px;font-weight:600">Wed Nov 18</div>'
-    + '<div class="sub num">' + (bcaD > 0 ? bcaD + ' days' : bcaD === 0 ? 'today' : 'done') + '</div></div>'
-    + '<div style="text-align:right"><div class="label">PFA</div><div style="font-size:20px;font-weight:600">Fri Nov 20</div>'
-    + '<div class="sub num">' + (pfaD > 0 ? pfaD + ' days' : pfaD === 0 ? 'today' : 'done') + '</div></div></div>'
-    + '<div class="note">Waist target at the BCA: 44.0" or under (measured at the umbilicus). Trend target is about 1.5 lb a week, roughly 260 lb by Nov 18; creatine water hides the first ten days or so. Food targets stay at '
-    + S.targets.kcal + ' kcal and ' + S.targets.protein + ' g protein.</div></div>';
-
-  var phases = '<div class="card"><div class="label" style="margin-bottom:4px">Phases</div>'
-    + '<div class="item"><span>Base</span><span class="sub num">Oct 12 – Nov 1</span></div>'
-    + '<div class="item"><span>Build</span><span class="sub num">Nov 2 – Nov 11</span></div>'
-    + '<div class="item"><span>Taper</span><span class="sub num">Nov 12 – Nov 17</span></div>'
-    + '<div class="item"><span>BCA, rest, PFA</span><span class="sub num">Nov 18 – 20</span></div></div>';
-
-  var form = '<div class="card"><div class="label" style="margin-bottom:8px">Log a test or measurement (today)</div>'
-    + '<div class="grid" style="margin-bottom:8px">'
-    + '<input id="pfa-pu" inputmode="numeric" placeholder="Push-ups (2 min)">'
-    + '<input id="pfa-plank" placeholder="Plank (m:ss)"></div>'
-    + '<div class="grid" style="margin-bottom:8px">'
-    + '<input id="pfa-bike" inputmode="numeric" placeholder="Bike (12 min, cal)">'
-    + '<input id="pfa-waist" inputmode="decimal" placeholder="Waist (in)"></div>'
-    + '<button class="btn solid" onclick="pfaSaveLog()">Save entry</button>'
-    + (msg ? '<div class="note" style="color:var(--rest)">' + esc(msg) + '</div>' : '')
-    + (S.pfa.log.length ? '<div style="margin-top:12px">' + S.pfa.log.map(function(e, i){
-        var bits = [];
-        if(e.pu) bits.push(esc(e.pu) + ' push-ups');
-        if(e.plank) bits.push('plank ' + esc(e.plank));
-        if(e.bike) bits.push(esc(e.bike) + ' cal bike');
-        if(e.waist) bits.push('waist ' + esc(e.waist) + '"');
-        return '<div class="item"><div><div class="sub num">' + esc(e.d) + '</div><div>' + bits.join(' · ') + '</div></div>'
-          + '<button class="link" onclick="pfaDelLog(' + i + ')">Delete</button></div>';
-      }).join("") + '</div>' : '')
-    + '</div>';
-
-  var shown = plan.filter(function(p){ return pfaPast || p.iso >= today; });
-  var hidden = plan.length - shown.length;
-  var weekLabel = null, rows = "";
-  shown.forEach(function(p){
-    var mon = new Date(p.d.getFullYear(), p.d.getMonth(), p.d.getDate() - ((p.dow + 6) % 7));
-    var wl = "Week of " + DAYNAME[DAYS[1]] + " " + (mon.getMonth()+1) + "/" + mon.getDate();
-    if(wl !== weekLabel){
-      rows += '<div class="label" style="margin:16px 2px 6px">' + wl + '</div>';
-      weekLabel = wl;
-    }
-    var isToday = p.iso === today, d = !!S.pfa.done[p.iso];
-    var key = (p.key === "bca" || p.key === "pfa" || p.key === "test" || p.key === "retest" || p.key === "base2");
-    rows += '<div class="card" style="padding:12px 14px;margin-bottom:8px;'
-      + (isToday ? 'border-color:var(--done);' : '') + (d ? 'opacity:.55;' : '') + '">'
-      + '<div class="row" style="align-items:flex-start"><div style="min-width:0">'
-      + '<div class="label num">' + DAYNAME[DAYS[p.dow]] + ' ' + (p.d.getMonth()+1) + '/' + p.d.getDate()
-      + (isToday ? ' · today' : '') + '</div>'
-      + '<div style="font-weight:600;margin-top:2px;' + (key ? 'color:var(--rest);' : '') + '">' + esc(p.title) + '</div>'
-      + '<div class="sub" style="margin-top:4px;line-height:1.5">' + esc(p.text) + '</div></div>'
-      + '<button class="set' + (d ? ' hit' : '') + '" style="flex:none;width:44px;height:44px;font-size:18px" '
-      + 'onclick="pfaToggle(\'' + p.iso + '\')" aria-label="Mark done">' + (d ? '✓' : '') + '</button></div></div>';
-  });
-  if(!rows) rows = '<div class="sub" style="margin:12px 2px">Nothing left on the schedule.</div>';
-
-  var pastBtn = (hidden > 0 || pfaPast)
-    ? '<button class="btn" style="margin-top:8px" onclick="pfaPastToggle()">' + (pfaPast ? 'Hide past days' : 'Show ' + hidden + ' past day' + (hidden === 1 ? '' : 's')) + '</button>' : '';
-
-  return top
-    + (total ? '<div class="sub num" style="margin:0 2px 12px">' + done + ' of ' + total + ' days checked off so far</div>' : '')
-    + phases + form + rows + pastBtn
-    + '<div class="note">Runs are set by heart rate, not feel. Lifting days follow your A/B rotation, so start them from the Lifting tab. Dates can be moved by your CFL; if they change, tell me and I\'ll rebuild this.</div>';
-}
-
 function vHome(){
   var dumbbell = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" '
     + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -1113,15 +963,13 @@ function vHome(){
     + '<div><div class="h1">Barbell Log</div>'
     + '<div class="sub num">' + (tab === "lift" ? S.history.length + ' sessions'
         : tab === "food" ? (dayTotals(todayISO()).kcal + ' kcal today')
-        : tab === "pfa" ? pfaHeadSub()
         : S.activities.length + ' activities') + '</div></div>'
     + '<button class="icon" onclick="go(\'settings\')" aria-label="Settings">' + dumbbell + '</button></div>'
     + '<div class="tabbar">'
     + '<button class="'+(tab==="lift"?"on":"")+'" onclick="setTab(\'lift\')">Lifting</button>'
     + '<button class="'+(tab==="cardio"?"on":"")+'" onclick="setTab(\'cardio\')">Cardio</button>'
-    + '<button class="'+(tab==="food"?"on":"")+'" onclick="setTab(\'food\')">Food</button>'
-    + '<button class="'+(tab==="pfa"?"on":"")+'" onclick="setTab(\'pfa\')">PFA Prep</button></div>'
-    + (tab === "cardio" ? pCardio() : tab === "food" ? pFood() : tab === "pfa" ? pPfa() : pLift());
+    + '<button class="'+(tab==="food"?"on":"")+'" onclick="setTab(\'food\')">Food</button></div>'
+    + (tab === "cardio" ? pCardio() : tab === "food" ? pFood() : pLift());
 }
 
 function pLift(){
