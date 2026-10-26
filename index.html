@@ -215,13 +215,46 @@ function warmupsFor(work, minW, name){
 }
 
 // ---------- rest timer ----------
-function startRest(sec){ restEnd = Date.now() + sec*1000; render(); }
+var wakeLock = null;
+function holdAwake(on){
+  try{
+    if(on){ if(navigator.wakeLock && !wakeLock) navigator.wakeLock.request("screen").then(function(l){ wakeLock = l; l.addEventListener("release", function(){ wakeLock = null; }); }).catch(function(){}); }
+    else if(wakeLock){ wakeLock.release(); wakeLock = null; }
+  }catch(e){}
+}
+document.addEventListener("visibilitychange", function(){ if(!document.hidden && restEnd && restLeft() > 0) holdAwake(true); });
+function phoneTimer(sec){
+  // Android: hand the countdown to the Clock app so it alarms even when this app is hidden
+  try{
+    var a = document.createElement("a");
+    a.href = "intent:#Intent;action=android.intent.action.SET_TIMER;i.android.intent.extra.alarm.LENGTH=" + Math.round(sec)
+      + ";S.android.intent.extra.alarm.MESSAGE=Rest;B.android.intent.extra.alarm.SKIP_UI=true;end";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }catch(e){}
+}
+var audioCtx = null;
+function beep(){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25].forEach(function(t){
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 880; g.gain.value = 0.25; o.connect(g); g.connect(audioCtx.destination);
+      o.start(audioCtx.currentTime + t); o.stop(audioCtx.currentTime + t + 0.15);
+    });
+  }catch(e){}
+}
+function startRest(sec){
+  restEnd = Date.now() + sec*1000; holdAwake(true);
+  try{ if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if(audioCtx.state === "suspended") audioCtx.resume(); }catch(e){}
+  if(S.phoneTimer) phoneTimer(sec);
+  render();
+}
 function restLeft(){ return restEnd ? Math.max(0, Math.ceil((restEnd - Date.now())/1000)) : 0; }
 var buzzed = false;
 setInterval(function(){
   if(!restEnd) return;
   var l = restLeft();
-  if(l === 0 && !buzzed){ buzzed = true; try{ navigator.vibrate && navigator.vibrate([220,90,220]); }catch(e){} }
+  if(l === 0 && !buzzed){ buzzed = true; try{ navigator.vibrate && navigator.vibrate([400,150,400,150,400]); }catch(e){} beep(); holdAwake(false); }
   if(l > 0) buzzed = false;
   var el = document.getElementById("clock");
   if(el){ el.textContent = mmss(l); var bar=document.getElementById("restbar");
@@ -1051,7 +1084,7 @@ function vWorkout(){
     + '<div id="clock" class="clock num">'+mmss(restLeft())+'</div></div>'
     + '<div style="display:flex;gap:8px">'
     + '<button class="ghost" onclick="restEnd+=30000;render()">+30s</button>'
-    + '<button class="ghost" onclick="restEnd=null;render()">Done</button></div></div>' : '';
+    + '<button class="ghost" onclick="restEnd=null;holdAwake(false);render()">Done</button></div></div>' : '';
   return '<div class="head"><div class="h1">'+esc(session.name)+'</div>'
     + '<button class="link" onclick="session=null;restEnd=null;go(\'home\')">Cancel</button></div>'
     + body
@@ -1251,6 +1284,9 @@ function vSettings(){
     + '<div class="card"><div class="row"><div><div class="label">Filter GPS drift</div>'
     + '<div class="sub" style="margin-top:4px">Ignore walk-tagged activities under 60 spm</div></div>'
     + '<button class="pill'+(S.filterJunk?' on':'')+'" onclick="S.filterJunk=!S.filterJunk;save();render()">'+(S.filterJunk?'On':'Off')+'</button></div></div>'
+    + '<div class="card"><div class="row"><div><div class="label">Phone Clock alarm for rests</div>'
+    + '<div class="sub" style="margin-top:4px">Android: also sets a timer in your Clock app so it rings with the app hidden. If you tap Done early, dismiss it in Clock.</div></div>'
+    + '<button class="pill'+(S.phoneTimer?' on':'')+'" onclick="S.phoneTimer=!S.phoneTimer;save();render()">'+(S.phoneTimer?'On':'Off')+'</button></div></div>'
     + '<div class="card"><div class="label">Bar weight (lb)</div>'
     + '<input class="num" inputmode="decimal" value="'+S.bar+'" onchange="S.bar=Number(this.value)||45;save();render()">'
     + '<div class="label" style="margin-top:14px">Plates you own (one side, comma separated)</div>'
